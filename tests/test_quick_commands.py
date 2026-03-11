@@ -1,6 +1,17 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
-import subprocess
+# The gateway imports tools/web_tools.py, which imports `firecrawl`.
+# The CLI imports `fire`, which may not be installed in the test env.
+# Stub both so tests only verify logic, not external deps.
+import sys
 from unittest.mock import MagicMock, patch, AsyncMock
+
+sys.modules.setdefault("firecrawl", MagicMock())
+sys.modules.setdefault("fire", MagicMock())
+# Some tools (e.g., image generation) import optional dependencies that may not
+# be installed in the test environment.
+sys.modules.setdefault("fal_client", MagicMock())
+
+import subprocess
 import pytest
 
 
@@ -32,7 +43,9 @@ class TestCLIQuickCommands:
         cli.console.print.assert_called_once()
 
     def test_exec_command_no_output_shows_fallback(self):
-        cli = self._make_cli({"empty": {"type": "exec", "command": "true"}})
+        # Use a cross-platform no-op command to avoid depending on shell builtins.
+        cmd = f'{sys.executable} -c "pass"'
+        cli = self._make_cli({"empty": {"type": "exec", "command": cmd}})
         cli.process_command("/empty")
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
@@ -93,9 +106,10 @@ class TestGatewayQuickCommands:
         event.source.chat_id = "123"
         return event
 
-    @pytest.mark.asyncio
-    async def test_exec_command_returns_output(self):
+    def test_exec_command_returns_output(self):
+        import asyncio
         from gateway.run import GatewayRunner
+
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"limits": {"type": "exec", "command": "echo ok"}}}
         runner._running_agents = {}
@@ -103,12 +117,28 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
 
         event = self._make_event("limits")
-        result = await runner._handle_message(event)
+        result = asyncio.run(runner._handle_message(event))
         assert result == "ok"
 
-    @pytest.mark.asyncio
-    async def test_unsupported_type_returns_error(self):
+    def test_exec_command_returns_output_with_dataclass_config(self):
+        import asyncio
+        from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(quick_commands={"limits": {"type": "exec", "command": "echo ok"}})
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("limits")
+        result = asyncio.run(runner._handle_message(event))
+        assert result == "ok"
+
+    def test_unsupported_type_returns_error(self):
+        import asyncio
+        from gateway.run import GatewayRunner
+
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"bad": {"type": "prompt", "command": "echo hi"}}}
         runner._running_agents = {}
@@ -116,14 +146,14 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
 
         event = self._make_event("bad")
-        result = await runner._handle_message(event)
+        result = asyncio.run(runner._handle_message(event))
         assert result is not None
         assert "unsupported type" in result.lower()
 
-    @pytest.mark.asyncio
-    async def test_timeout_returns_error(self):
-        from gateway.run import GatewayRunner
+    def test_timeout_returns_error(self):
         import asyncio
+        from gateway.run import GatewayRunner
+
         runner = GatewayRunner.__new__(GatewayRunner)
         runner.config = {"quick_commands": {"slow": {"type": "exec", "command": "sleep 100"}}}
         runner._running_agents = {}
@@ -132,6 +162,6 @@ class TestGatewayQuickCommands:
 
         event = self._make_event("slow")
         with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
-            result = await runner._handle_message(event)
+            result = asyncio.run(runner._handle_message(event))
         assert result is not None
         assert "timed out" in result.lower()

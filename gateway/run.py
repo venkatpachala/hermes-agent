@@ -199,6 +199,16 @@ class GatewayRunner:
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
 
+        # Load quick commands and other user CLI configuration (from ~/.hermes/config.yaml)
+        # so the gateway can honor things like /<quick_command> even when running headless.
+        self._cli_config: Dict[str, Any] = {}
+        try:
+            from hermes_cli.config import load_config
+
+            self._cli_config = load_config()
+        except Exception:
+            self._cli_config = {}
+
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
         self._prefill_messages = self._load_prefill_messages()
@@ -884,7 +894,11 @@ class GatewayRunner:
         
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            quick_commands = self.config.get("quick_commands", {})
+            if isinstance(self.config, dict):
+                quick_commands = self.config.get("quick_commands", {}) or {}
+            else:
+                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
